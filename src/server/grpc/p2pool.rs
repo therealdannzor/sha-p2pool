@@ -5,19 +5,15 @@ use std::sync::Arc;
 
 use log::{debug, info, warn};
 use minotari_app_grpc::tari_rpc::{
-    base_node_client::BaseNodeClient,
-    pow_algo::PowAlgos,
-    sha_p2_pool_server::ShaP2Pool,
-    GetNewBlockRequest,
-    GetNewBlockResponse,
-    GetNewBlockTemplateWithCoinbasesRequest,
-    HeightRequest,
-    NewBlockTemplateRequest,
-    PowAlgo,
-    SubmitBlockRequest,
-    SubmitBlockResponse,
+    base_node_client::BaseNodeClient, pow_algo::PowAlgos, sha_p2_pool_server::ShaP2Pool, GetNewBlockRequest,
+    GetNewBlockResponse, GetNewBlockTemplateWithCoinbasesRequest, HeightRequest, NewBlockTemplateRequest, PowAlgo,
+    SubmitBlockRequest, SubmitBlockResponse,
 };
-use tari_core::proof_of_work::sha3x_difficulty;
+use tari_core::{
+    blocks::BlockHeader,
+    consensus::ConsensusManager,
+    proof_of_work::{randomx_difficulty, randomx_factory::RandomXFactory},
+};
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
 
@@ -28,12 +24,14 @@ use crate::{
     },
     sharechain::{block::Block, ShareChain, SHARE_COUNT},
 };
+use tari_common::configuration::Network;
 
 const LOG_TARGET: &str = "p2pool_grpc";
 
 /// P2Pool specific gRPC service to provide `get_new_block` and `submit_block` functionalities.
 pub struct ShaP2PoolGrpc<S>
-where S: ShareChain + Send + Sync + 'static
+where
+    S: ShareChain + Send + Sync + 'static,
 {
     /// Base node client
     client: Arc<Mutex<BaseNodeClient<tonic::transport::Channel>>>,
@@ -44,7 +42,8 @@ where S: ShareChain + Send + Sync + 'static
 }
 
 impl<S> ShaP2PoolGrpc<S>
-where S: ShareChain + Send + Sync + 'static
+where
+    S: ShareChain + Send + Sync + 'static,
 {
     pub async fn new(
         base_node_address: String,
@@ -73,7 +72,8 @@ where S: ShareChain + Send + Sync + 'static
 
 #[tonic::async_trait]
 impl<S> ShaP2Pool for ShaP2PoolGrpc<S>
-where S: ShareChain + Send + Sync + 'static
+where
+    S: ShareChain + Send + Sync + 'static,
 {
     /// Returns a new block (that can be mined) which contains all the shares generated
     /// from the current share chain as coinbase transactions.
@@ -81,8 +81,10 @@ where S: ShareChain + Send + Sync + 'static
         &self,
         _request: Request<GetNewBlockRequest>,
     ) -> Result<Response<GetNewBlockResponse>, Status> {
+        println!("[DEBUG] get_new_block called");
+
         let mut pow_algo = PowAlgo::default();
-        pow_algo.set_pow_algo(PowAlgos::Sha3x);
+        pow_algo.set_pow_algo(PowAlgos::Randomx);
 
         // request original block template to get reward
         let req = NewBlockTemplateRequest {
@@ -130,6 +132,8 @@ where S: ShareChain + Send + Sync + 'static
         &self,
         request: Request<SubmitBlockRequest>,
     ) -> Result<Response<SubmitBlockResponse>, Status> {
+        println!("[DEBUG] submit_block called");
+
         let grpc_block = request.get_ref();
         let grpc_request_payload = grpc_block
             .block
@@ -156,10 +160,24 @@ where S: ShareChain + Send + Sync + 'static
             .as_ref()
             .ok_or_else(|| Status::internal("missing original block header"))?;
 
+        let tari_header: &BlockHeader = &origin_block_header.clone();
+        let pow_data = &tari_header.pow;
+        println!("[DEBUG] pow_data: {:?}", pow_data);
+        let network = Network::get_current_or_user_setting_or_default();
+        let manager = ConsensusManager::builder(network)
+            .build()
+            .map_err(|_| Status::internal("failed to boot consensus manager"))?;
+
         // Check block's difficulty compared to the latest network one to increase the probability
         // to get the block accepted (and also a block with lower difficulty than latest one is invalid anyway).
-        let request_block_difficulty =
-            sha3x_difficulty(origin_block_header).map_err(|error| Status::internal(error.to_string()))?;
+        let request_block_difficulty = randomx_difficulty(
+            tari_header,
+            &RandomXFactory::new(5), // default, move to const later
+            manager.get_genesis_block().hash(),
+            &manager,
+        )
+        .map_err(|err| Status::internal(err.to_string()))?;
+
         let mut network_difficulty_stream = self
             .client
             .lock()
@@ -173,8 +191,8 @@ where S: ShareChain + Send + Sync + 'static
             .into_inner();
         let mut network_difficulty_matches = false;
         while let Ok(Some(diff_resp)) = network_difficulty_stream.message().await {
-            if origin_block_header.height == diff_resp.height + 1 &&
-                request_block_difficulty.as_u64() > diff_resp.difficulty
+            if origin_block_header.height == diff_resp.height + 1
+                && request_block_difficulty.as_u64() > diff_resp.difficulty
             {
                 network_difficulty_matches = true;
             }
