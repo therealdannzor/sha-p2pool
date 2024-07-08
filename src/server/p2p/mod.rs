@@ -13,3 +13,4 @@ mod error;
 pub mod messages;
 mod p2p;
 pub mod peer_store;
+mod tests;

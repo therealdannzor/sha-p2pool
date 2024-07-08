@@ -88,24 +88,31 @@ impl PeerStore {
     /// Returns count of peers.
     /// Note: it is needed to calculate number of validations needed to make sure a new block is valid.
     pub async fn peer_count(&self) -> u64 {
+        // avoid inaccuracies by running pending tasks before counting
+        self.inner.run_pending_tasks().await;
+
         self.inner.entry_count()
     }
 
     /// Sets the actual highest block height with peer.
     async fn set_tip_of_block_height(&self) {
+        println!("[DEBUG] inner: {:?}", self.inner);
         if let Some((k, v)) = self
             .inner
             .iter()
             .max_by(|(_k1, v1), (_k2, v2)| v1.peer_info.current_height.cmp(&v2.peer_info.current_height))
         {
+            println!("[DEBUG] max peer: {:?} -> {:?}", k, v);
             // save result
-            if let Ok(mut tip_height_opt) = self.tip_of_block_height.write() {
-                if tip_height_opt.is_none() {
-                    let _ = tip_height_opt.insert(PeerStoreBlockHeightTip::new(*k, v.peer_info.current_height));
+            if let Ok(mut block_tip_opt) = self.tip_of_block_height.write() {
+                if block_tip_opt.is_none() {
+                    let _ = block_tip_opt.insert(PeerStoreBlockHeightTip::new(*k, v.peer_info.current_height));
                 } else {
-                    let mut tip_height = tip_height_opt.unwrap();
-                    tip_height.peer_id = *k;
-                    tip_height.height = v.peer_info.current_height;
+                    let mut block_tip = block_tip_opt.unwrap();
+                    println!("[DEBUG] tip_height: {:?}", block_tip);
+                    block_tip.peer_id = *k;
+                    block_tip.height = v.peer_info.current_height;
+                    println!("[DEBUG] height: {:?}", block_tip.height);
                 }
             }
         }
@@ -114,6 +121,7 @@ impl PeerStore {
     /// Returns peer with the highest share chain height.
     pub async fn tip_of_block_height(&self) -> Option<PeerStoreBlockHeightTip> {
         if let Ok(result) = self.tip_of_block_height.read() {
+            println!("[DEBUG] tip_of_block_height: {:?}", result);
             if result.is_some() {
                 return Some(result.unwrap());
             }
