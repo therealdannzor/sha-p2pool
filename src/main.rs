@@ -1,17 +1,19 @@
 // Copyright 2024 The Tari Project
 // SPDX-License-Identifier: BSD-3-Clause
 
-use std::path::PathBuf;
-
+use crate::sharechain::in_memory::InMemoryShareChain;
 use clap::{
     builder::{styling::AnsiColor, Styles},
     Parser,
 };
 use env_logger::Builder;
 use log::LevelFilter;
+use minotari_app_utilities::common_cli_args::CommonCliArgs;
+use std::path::PathBuf;
+use tari_common::configuration::ConfigOverrideProvider;
+use tari_p2p::Network;
 
-use crate::sharechain::in_memory::InMemoryShareChain;
-
+mod config;
 mod server;
 mod sharechain;
 
@@ -26,11 +28,13 @@ fn cli_styles() -> Styles {
         .valid(AnsiColor::BrightGreen.on_default())
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(version)]
 #[command(styles = cli_styles())]
 #[command(about = "⛏ Decentralized mining pool for Tari network ⛏", long_about = None)]
-struct Cli {
+pub struct Cli {
+    common: CommonCliArgs,
+
     /// Log level
     #[arg(short, long, value_name = "log-level", default_value = Some("info"))]
     log_level: LevelFilter,
@@ -77,6 +81,13 @@ struct Cli {
     /// By setting this it can be used as a stable node for routing only.
     #[arg(long, value_name = "mining-disabled", default_value_t = false)]
     mining_disabled: bool,
+}
+
+impl ConfigOverrideProvider for Cli {
+    fn get_config_property_overrides(&self, network: &mut Network) -> Vec<(String, String)> {
+        let overrides = self.common.get_config_property_overrides(network);
+        overrides
+    }
 }
 
 #[tokio::main]
